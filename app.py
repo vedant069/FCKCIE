@@ -7,67 +7,76 @@ import base64
 from io import BytesIO
 from dotenv import load_dotenv
 from google import genai
-import asyncio
-import pyppeteer
-import platform
+import subprocess
 import sys
+
+# Import Playwright instead of pyppeteer
+from playwright.sync_api import sync_playwright
 
 # Load environment variables from .env
 load_dotenv()
 GEMINI_API_KEY = 'AIzaSyAOK9vRTSRQzd22B2gmbiuIePbZTDyaGYs'
 
 # --- Browser Setup ---
-async def setup_browser():
-    """Get a pyppeteer browser instance that works in Hugging Face Spaces"""
+def install_playwright_browsers():
+    """Install Playwright browsers if they're not already installed"""
+    try:
+        st.info("Installing Playwright browsers...")
+        result = subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        st.success("Playwright browsers installed successfully!")
+        return True
+    except subprocess.CalledProcessError as e:
+        st.error(f"Failed to install Playwright browsers: {e.stderr}")
+        return False
+    except Exception as e:
+        st.error(f"Unexpected error installing browsers: {e}")
+        return False
+
+def setup_browser():
+    """Set up a Playwright browser instance"""
     try:
         st.info("Initializing headless browser...")
-        browser = await pyppeteer.launch(
+        
+        # Make sure browsers are installed
+        if "playwright_browsers_installed" not in st.session_state:
+            install_playwright_browsers()
+            st.session_state.playwright_browsers_installed = True
+        
+        # Start Playwright
+        playwright = sync_playwright().start()
+        browser = playwright.chromium.launch(
             headless=True,
             args=[
                 '--no-sandbox',
-                '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--disable-software-rasterizer'
             ]
         )
-        page = await browser.newPage()
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
-        
-        # Set viewport size
-        await page.setViewport({'width': 1280, 'height': 800})
-        
-        return {"browser": browser, "page": page}
+        context = browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            viewport={'width': 1280, 'height': 800}
+        )
+        page = context.new_page()
+        return {"playwright": playwright, "browser": browser, "context": context, "page": page}
     except Exception as e:
         st.error(f"Failed to initialize browser: {e}")
         raise
 
-# Function to run async functions from sync code
-def run_async(async_func, *args, **kwargs):
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(async_func(*args, **kwargs))
-        loop.close()
-        return result
-    except Exception as e:
-        st.error(f"Async execution error: {e}")
-        raise
-
 # --- Utility Functions ---
-async def async_take_screenshot(browser_data):
-    """Takes a screenshot using pyppeteer"""
+def take_screenshot(browser_data):
+    """Takes a screenshot using Playwright"""
     try:
         page = browser_data["page"]
-        screenshot_bytes = await page.screenshot()
+        screenshot_bytes = page.screenshot()
         return screenshot_bytes
     except Exception as e:
         st.error(f"Screenshot error: {e}")
         return None
-
-def take_screenshot(browser_data):
-    """Wrapper for async screenshot function"""
-    return run_async(async_take_screenshot, browser_data)
 
 def extract_questions_from_fb_data(html):
     """
@@ -191,12 +200,12 @@ def generate_answers(questions, api_key):
             
     return questions
 
-async def async_fill_form(browser_data, questions):
-    """Fills the Google Form with generated answers using pyppeteer"""
+def fill_form(browser_data, questions):
+    """Fills the Google Form with generated answers using Playwright"""
     page = browser_data["page"]
     
     # Locate question containers
-    question_containers = await page.querySelectorAll('div.freebirdFormviewerViewItemsItemItem, div[role="listitem"]')
+    question_containers = page.query_selector_all('div.freebirdFormviewerViewItemsItemItem, div[role="listitem"]')
     
     if not question_containers:
         st.error("Could not locate question containers in the form.")
@@ -207,7 +216,7 @@ async def async_fill_form(browser_data, questions):
     print(f"We have {len(questions)} questions with answers to fill")
 
     # Give the form time to fully render
-    await asyncio.sleep(2)
+    time.sleep(2)
 
     for idx, q in enumerate(questions):
         if idx >= len(question_containers):
@@ -227,7 +236,7 @@ async def async_fill_form(browser_data, questions):
                 print(f"This is a multiple-choice question with {len(options)} options")
                 
                 # Try multiple selector strategies to find radio buttons or checkboxes
-                option_elements = await container.querySelectorAll('div[role="radio"], label, div.appsMaterialWizToggleRadiogroupRadioButtonContainer, .docssharedWizToggleLabeledLabelWrapper')
+                option_elements = container.query_selector_all('div[role="radio"], label, div.appsMaterialWizToggleRadiogroupRadioButtonContainer, .docssharedWizToggleLabeledLabelWrapper')
                 
                 if not option_elements:
                     st.warning(f"Could not find option elements for question {idx+1}")
@@ -245,12 +254,12 @@ async def async_fill_form(browser_data, questions):
                 # Try to match element text with our answer
                 for i, opt_elem in enumerate(option_elements):
                     # Try to get the text content of the option
-                    opt_text = await page.evaluate('(element) => element.textContent || element.innerText || ""', opt_elem)
+                    opt_text = opt_elem.inner_text() or ""
                     opt_text = opt_text.strip()
                     
                     # If no text found, try to get aria-label
                     if not opt_text:
-                        opt_text = await page.evaluate('(element) => element.getAttribute("aria-label") || ""', opt_elem)
+                        opt_text = opt_elem.get_attribute("aria-label") or ""
                         opt_text = opt_text.strip()
                     
                     # Normalize option text
@@ -258,7 +267,7 @@ async def async_fill_form(browser_data, questions):
                     
                     # Try exact match
                     if normalized_opt and normalized_opt == normalized_answer:
-                        await opt_elem.click()
+                        opt_elem.click()
                         clicked = True
                         print(f"Clicked option: '{opt_text}' (exact match)")
                         break
@@ -266,19 +275,19 @@ async def async_fill_form(browser_data, questions):
                 # If no exact match found, try substring matching
                 if not clicked:
                     for i, opt_elem in enumerate(option_elements):
-                        opt_text = await page.evaluate('(element) => element.textContent || element.innerText || element.getAttribute("aria-label") || ""', opt_elem)
+                        opt_text = opt_elem.inner_text() or opt_elem.get_attribute("aria-label") or ""
                         opt_text = opt_text.strip()
                         normalized_opt = re.sub(r'[^\w\s]', '', opt_text.lower()).strip()
                         
                         if normalized_opt and (normalized_opt in normalized_answer or normalized_answer in normalized_opt):
-                            await opt_elem.click()
+                            opt_elem.click()
                             clicked = True
                             print(f"Clicked option: '{opt_text}' (substring match)")
                             break
                 
                 # Last resort: click the first element as fallback
                 if not clicked and option_elements:
-                    await option_elements[0].click()
+                    option_elements[0].click()
                     print("No match found. Clicked first option as fallback")
                     
             except Exception as e:
@@ -288,10 +297,10 @@ async def async_fill_form(browser_data, questions):
             try:
                 print("This is a text question")
                 # For text questions, locate the text input or textarea
-                input_elem = await container.querySelector('input[type="text"], textarea, input')
+                input_elem = container.query_selector('input[type="text"], textarea, input')
                 
                 if input_elem:
-                    await input_elem.type(answer)
+                    input_elem.fill(answer)
                     print(f"Filled text answer: {answer}")
                 else:
                     st.error(f"Could not locate input element for question {idx+1}")
@@ -304,41 +313,37 @@ async def async_fill_form(browser_data, questions):
     print("\n---------- Form filling completed ----------")
     return True
 
-def fill_form(browser_data, questions):
-    """Wrapper for async fill form function"""
-    return run_async(async_fill_form, browser_data, questions)
-
-async def async_login_to_google(browser_data, email, password):
-    """Logs into Google account using pyppeteer"""
+def login_to_google(browser_data, email, password):
+    """Logs into Google account using Playwright"""
     try:
         page = browser_data["page"]
         
         # Navigate to Google login page
-        await page.goto("https://accounts.google.com/signin")
-        await asyncio.sleep(2)
+        page.goto("https://accounts.google.com/signin")
+        time.sleep(2)
         
         # Take screenshot to show the login page
-        screenshot = await async_take_screenshot(browser_data)
+        screenshot = take_screenshot(browser_data)
         st.image(screenshot, caption="Login Page", use_column_width=True)
         
         # Enter email
-        email_input = await page.waitForSelector('input[type="email"]')
-        await email_input.type(email)
-        await page.keyboard.press('Enter')
-        await asyncio.sleep(2)
+        email_input = page.wait_for_selector('input[type="email"]')
+        email_input.fill(email)
+        page.keyboard.press('Enter')
+        time.sleep(2)
         
         # Take screenshot after email entry
-        screenshot = await async_take_screenshot(browser_data)
+        screenshot = take_screenshot(browser_data)
         st.image(screenshot, caption="Email Entered", use_column_width=True)
         
         # Enter password
-        password_input = await page.waitForSelector('input[type="password"]')
-        await password_input.type(password)
-        await page.keyboard.press('Enter')
-        await asyncio.sleep(5)  # Wait for login to complete
+        password_input = page.wait_for_selector('input[type="password"]')
+        password_input.fill(password)
+        page.keyboard.press('Enter')
+        time.sleep(5)  # Wait for login to complete
         
         # Take screenshot after login attempt
-        screenshot = await async_take_screenshot(browser_data)
+        screenshot = take_screenshot(browser_data)
         st.image(screenshot, caption="Login Attempt Result", use_column_width=True)
         
         # Check if login was successful
@@ -348,7 +353,7 @@ async def async_login_to_google(browser_data, email, password):
                 return True
                 
             # Check for possible 2FA prompt
-            page_content = await page.content()
+            page_content = page.content()
             if "2-Step Verification" in page_content or "verification" in page_content.lower():
                 st.warning("Two-factor authentication detected. Please complete it in the browser window.")
                 return "2FA"
@@ -364,10 +369,6 @@ async def async_login_to_google(browser_data, email, password):
     except Exception as e:
         st.error(f"Error during login: {str(e)}")
         return False
-
-def login_to_google(browser_data, email, password):
-    """Wrapper for async login function"""
-    return run_async(async_login_to_google, browser_data, email, password)
 
 # --- Streamlit App ---
 st.title("Google Form Auto Filler with Gemini")
@@ -398,7 +399,7 @@ with st.form("google_login"):
     if submit_button and email and password:
         # Initialize browser
         try:
-            browser_data = run_async(setup_browser)
+            browser_data = setup_browser()
             st.session_state.browser_data = browser_data
             
             # Show initial browser window
@@ -420,7 +421,7 @@ with st.form("google_login"):
         
         except Exception as e:
             st.error(f"Error initializing browser: {str(e)}")
-            st.info("If you're seeing this error, please check your Hugging Face Space logs for details.")
+            st.info("If you're seeing this error, please check the Streamlit Cloud logs for details.")
             
 # Add manual confirmation option for login
 if st.session_state.login_status == False:
@@ -438,7 +439,7 @@ if st.session_state.login_status == "2FA" and st.session_state.browser_data:
         
         # Check if we're past the login page now
         page = st.session_state.browser_data["page"]
-        current_url = run_async(lambda: page.url)
+        current_url = page.url
         if "accounts.google.com/signin" not in current_url:
             st.success("Looks like you completed 2FA! You can proceed to the form filling step.")
             st.session_state.login_status = True
@@ -462,14 +463,14 @@ if st.session_state.browser_data and (st.session_state.login_status == True or s
             # Only load the form if questions aren't already processed
             if "questions" not in st.session_state:
                 page = browser_data["page"]
-                run_async(lambda: page.goto(form_url))
+                page.goto(form_url)
                 time.sleep(5)  # Allow the form to load completely
                 
                 # Show the form
                 screenshot = take_screenshot(browser_data)
                 st.image(screenshot, caption="Google Form Loaded", use_column_width=True)
                 
-                html = run_async(lambda: page.content())
+                html = page.content()
                 
                 # Extract questions from the form
                 questions = extract_questions_from_fb_data(html)
@@ -508,7 +509,7 @@ if st.session_state.browser_data and (st.session_state.login_status == True or s
                     with st.spinner("Filling form..."):
                         # Navigate to the form again to ensure clean state
                         page = browser_data["page"]
-                        run_async(lambda: page.goto(st.session_state.form_url))
+                        page.goto(st.session_state.form_url)
                         time.sleep(3)
                         
                         if fill_form(browser_data, questions):
@@ -538,9 +539,10 @@ if st.session_state.browser_data:
     st.markdown("---")
     if st.button("Close Browser"):
         try:
-            # Properly close pyppeteer resources
+            # Properly close Playwright resources
             browser_data = st.session_state.browser_data
-            run_async(lambda: browser_data["browser"].close())
+            browser_data["browser"].close()
+            browser_data["playwright"].stop()
             
             # Clear session state
             st.session_state.browser_data = None
