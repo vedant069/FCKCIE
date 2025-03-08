@@ -1,5 +1,3 @@
-import asyncio
-import nest_asyncio
 import os
 import re
 import json
@@ -18,18 +16,8 @@ from google import genai
 
 # Load environment variables from .env
 load_dotenv()
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyAOK9vRTSRQzd22B2gmbiuIePbZTDyaGYs')
+GEMINI_API_KEY = 'AIzaSyAOK9vRTSRQzd22B2gmbiuIePbZTDyaGYs'
 
-# Initialize asyncio for threaded environments
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    # If there is no event loop in this thread, create one and make it current
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    
-# Apply nest_asyncio to allow nested event loops 
-# (sometimes needed in Streamlit)
-nest_asyncio.apply()
 # --- Utility Functions ---
 
 def take_screenshot(driver):
@@ -99,85 +87,68 @@ def generate_answers(questions, api_key):
     """
     For each question, call Google Gemini to generate an answer that matches available options.
     """
-    try:
-        # Ensure we have an event loop in this thread
+    client = genai.Client(api_key=api_key)
+    for q in questions:
+        question_text = q["question_text"]
+        options = q["options"]
+        
+        if options:
+            # For multiple choice questions, make prompt more specific to choose exactly one option
+            prompt = f"""
+            Question: {question_text}
+            
+            These are the EXACT options (choose only one):
+            {', '.join([f'"{opt}"' for opt in options])}
+            
+            Instructions:
+            1. Choose exactly ONE option from the list above
+            2. Return ONLY the exact text of the chosen option, nothing else
+            3. Do not add any explanation, just the option text
+            4. Do not add quotation marks around the option
+            5. Don not answer questions like "What is your name?","Rollno","PRN/GRN","Email","Mobile No","Address","DOB etc
+            
+            Answer:
+            """
+        else:
+            # For free-text questions, keep it simple
+            prompt = f"""
+            Question: {question_text}
+            
+            Please provide a brief and direct answer to this question.
+            Keep your answer concise (1-2 sentences maximum).
+            
+            Answer:
+            """
+        
         try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        client = genai.Client(api_key=api_key)
-        
-        for q in questions:
-            question_text = q["question_text"]
-            options = q["options"]
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
             
-            # Rest of your existing function code...
+            answer = response.text.strip()
+            
+            # For multiple choice, ensure it exactly matches one of the options
             if options:
-                prompt = f"""
-                Question: {question_text}
+                exact_match = False
+                for opt in options:
+                    if opt.lower() == answer.lower():
+                        answer = opt  # Use the exact casing from the original option
+                        exact_match = True
+                        break
                 
-                These are the EXACT options (choose only one):
-                {', '.join([f'"{opt}"' for opt in options])}
-                
-                Instructions:
-                1. Choose exactly ONE option from the list above
-                2. Return ONLY the exact text of the chosen option, nothing else
-                3. Do not add any explanation, just the option text
-                4. Do not add quotation marks around the option
-                5. Don not answer questions like "What is your name?","Rollno","PRN/GRN","Email","Mobile No","Address","DOB etc
-                
-                Answer:
-                """
-            else:
-                prompt = f"""
-                Question: {question_text}
-                
-                Please provide a brief and direct answer to this question.
-                Keep your answer concise (1-2 sentences maximum).
-                
-                Answer:
-                """
+                # If no exact match, use the most similar option
+                if not exact_match:
+                    from difflib import SequenceMatcher
+                    best_match = max(options, key=lambda opt: SequenceMatcher(None, opt.lower(), answer.lower()).ratio())
+                    answer = best_match
             
-            try:
-                response = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=prompt
-                )
-                
-                answer = response.text.strip()
-                
-                # For multiple choice, ensure it exactly matches one of the options
-                if options:
-                    exact_match = False
-                    for opt in options:
-                        if opt.lower() == answer.lower():
-                            answer = opt  # Use the exact casing from the original option
-                            exact_match = True
-                            break
-                    
-                    # If no exact match, use the most similar option
-                    if not exact_match:
-                        from difflib import SequenceMatcher
-                        best_match = max(options, key=lambda opt: SequenceMatcher(None, opt.lower(), answer.lower()).ratio())
-                        answer = best_match
-                
-                q["gemini_answer"] = answer
-                
-            except Exception as e:
-                q["gemini_answer"] = f"Error: {str(e)}"
-                st.error(f"Error generating answer: {str(e)}")
-                
-        return questions
-        
-    except Exception as e:
-        st.error(f"Error in generate_answers function: {str(e)}")
-        # Return questions with error messages
-        for q in questions:
-            if "gemini_answer" not in q:
-                q["gemini_answer"] = f"Error: Could not generate answer due to {str(e)}"
-        return questions
+            q["gemini_answer"] = answer
+            
+        except Exception as e:
+            q["gemini_answer"] = f"Error: {str(e)}"
+            
+    return questions
 
 def fill_form(driver, questions):
     """
@@ -450,40 +421,7 @@ def login_to_google(driver, email, password):
     except Exception as e:
         st.error(f"Error during login: {str(e)}")
         return False
-def initialize_browser():
-    """
-    Initialize a Chrome browser with Docker-compatible settings
-    """
-    from webdriver_manager.chrome import ChromeDriverManager
-    from selenium.webdriver.chrome.service import Service
-    
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")  # Modern headless mode
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
-    
-    try:
-        # First attempt: Try using webdriver-manager
-        try:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            return driver
-        except Exception as e1:
-            st.warning(f"First browser initialization attempt failed: {e1}")
-            
-            # Second attempt: Try direct Chrome browser instance
-            try:
-                driver = webdriver.Chrome(options=chrome_options)
-                return driver
-            except Exception as e2:
-                st.error(f"Second browser initialization attempt failed: {e2}")
-                return None
-    except Exception as e:
-        st.error(f"Failed to initialize browser: {str(e)}")
-        return None
+
 # --- Streamlit App ---
 
 st.title("Google Form Auto Filler with Gemini")
@@ -512,31 +450,33 @@ with st.form("google_login"):
     submit_button = st.form_submit_button("Login to Google")
     
     if submit_button and email and password:
-    # Initialize browser using our Docker-compatible function
-            driver = initialize_browser()
-            
-            if driver:
-                st.session_state.driver = driver
-                
-                # Show initial browser window
-                screenshot = take_screenshot(driver)
-                st.session_state.screenshot = screenshot
-                st.image(screenshot, caption="Browser Started", use_column_width=True)
-                
-                # Try to login
-                login_result = login_to_google(driver, email, password)
-                st.session_state.login_status = login_result
-                
-                if login_result == True:
-                    st.success("Login successful!")
-                elif login_result == "2FA":
-                    st.warning("Two-factor authentication may be required. Check the screenshot for verification prompts.")
-                    st.info("You might need to complete 2FA in the browser window. Screenshots will update as you proceed.")
-                else:
-                    st.error("Login failed. Please check your credentials and try again.")
-            else:
-                st.error("Failed to initialize browser. Please check Docker configuration.")
-
+        # Initialize headless Chrome browser
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--window-size=1920,1080")
+        
+        # Start the browser
+        driver = webdriver.Chrome(options=chrome_options)
+        st.session_state.driver = driver
+        
+        # Show initial browser window
+        screenshot = take_screenshot(driver)
+        st.session_state.screenshot = screenshot
+        st.image(screenshot, caption="Browser Started", use_column_width=True)
+        
+        # Try to login
+        login_result = login_to_google(driver, email, password)
+        st.session_state.login_status = login_result
+        
+        if login_result == True:
+            st.success("Login successful!")
+        elif login_result == "2FA":
+            st.warning("Two-factor authentication may be required. Check the screenshot for verification prompts.")
+            st.info("You might need to complete 2FA in the browser window. Screenshots will update as you proceed.")
+        else:
+            st.error("Login failed. Please check your credentials and try again.")
 
 # Add manual confirmation option for login
 if st.session_state.login_status == False:

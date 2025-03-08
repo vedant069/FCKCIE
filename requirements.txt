@@ -1,5 +1,6 @@
-streamlit
-python-dotenv
-selenium
+streamlit==1.36.0
+selenium==4.18.1
 google-genai
-pyppeteer
+python-dotenv==1.0.1
+nest-asyncio==1.6.0
+webdriver-manager==4.0.1
