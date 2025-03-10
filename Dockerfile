@@ -60,4 +60,4 @@ EXPOSE 8501
 ENV GEMINI_API_KEY=""
 
 # Run Streamlit
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "app2.py", "--server.address=0.0.0.0" , "--port", "7860"]
